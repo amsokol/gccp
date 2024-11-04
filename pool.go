@@ -1,7 +1,6 @@
 package gccp
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -10,15 +9,17 @@ import (
 	"google.golang.org/grpc/connectivity"
 )
 
+// Pool represents a pool of gRPC client connections.
 type Pool struct {
 	address     string
 	connections chan *grpc.ClientConn
 	options     []grpc.DialOption
 	size        int
 	mu          sync.Mutex
-	timeout     time.Duration
 }
 
+// NewPool creates a new pool of gRPC client connections.
+// It initializes the pool with the given address, size, timeout, and options.
 func NewPool(address string, size int, timeout time.Duration, options ...grpc.DialOption) (*Pool, error) {
 	pool := &Pool{
 		connections: make(chan *grpc.ClientConn, size),
@@ -26,9 +27,9 @@ func NewPool(address string, size int, timeout time.Duration, options ...grpc.Di
 		address:     address,
 		options:     options,
 		mu:          sync.Mutex{},
-		timeout:     timeout,
 	}
 
+	// Initialize the pool with connections
 	for range size {
 		conn, err := grpc.NewClient(address, options...)
 		if err != nil {
@@ -40,6 +41,8 @@ func NewPool(address string, size int, timeout time.Duration, options ...grpc.Di
 	return pool, nil
 }
 
+// Get retrieves a connection from the pool.
+// If the pool is empty, it creates a new connection.
 func (p *Pool) Get() (*grpc.ClientConn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -51,12 +54,8 @@ loop:
 		select {
 		case conn = <-p.connections:
 			switch conn.GetState() {
-			case connectivity.Ready, connectivity.Idle:
+			case connectivity.Ready, connectivity.Idle, connectivity.TransientFailure, connectivity.Connecting:
 				break loop
-			case connectivity.Connecting, connectivity.TransientFailure:
-				if p.waitForConnectionReady(conn) {
-					break loop
-				}
 			case connectivity.Shutdown:
 			}
 
@@ -80,17 +79,8 @@ loop:
 	return conn, nil
 }
 
-func (p *Pool) waitForConnectionReady(conn *grpc.ClientConn) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), p.timeout)
-	defer cancel() // Ensure resources are cleaned up
-
-	if conn.WaitForStateChange(ctx, conn.GetState()) {
-		return conn.GetState() == connectivity.Ready
-	}
-
-	return false
-}
-
+// Release returns a connection to the pool.
+// If the connection is closed or the pool is full, it closes the connection.
 func (p *Pool) Release(conn *grpc.ClientConn) {
 	if conn == nil {
 		return
@@ -99,17 +89,16 @@ func (p *Pool) Release(conn *grpc.ClientConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if conn.GetState() == connectivity.Shutdown || len(p.connections) >= p.size {
+	if conn.GetState() != connectivity.Shutdown || len(p.connections) < p.size {
+		p.connections <- conn
+	} else {
 		// Don't put a closed connection back into the pool
 		// or pool is full
 		_ = conn.Close() // Handle close error if necessary
-
-		return
 	}
-
-	p.connections <- conn
 }
 
+// Close closes all connections in the pool.
 func (p *Pool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
