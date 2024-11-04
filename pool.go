@@ -51,9 +51,9 @@ loop:
 		select {
 		case conn = <-p.connections:
 			switch conn.GetState() {
-			case connectivity.Ready:
+			case connectivity.Ready, connectivity.Idle:
 				break loop
-			case connectivity.Idle, connectivity.Connecting, connectivity.TransientFailure:
+			case connectivity.Connecting, connectivity.TransientFailure:
 				if p.waitForConnectionReady(conn) {
 					break loop
 				}
@@ -61,6 +61,7 @@ loop:
 			}
 
 			_ = conn.Close()
+			conn = nil
 		default:
 			// Pool is empty, create a new connection
 			break loop
