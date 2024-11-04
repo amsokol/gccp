@@ -47,33 +47,25 @@ func (p *Pool) Get() (*grpc.ClientConn, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var conn *grpc.ClientConn
-
 loop:
 	for {
 		select {
-		case conn = <-p.connections:
+		case conn := <-p.connections:
 			switch conn.GetState() {
 			case connectivity.Ready, connectivity.Idle, connectivity.TransientFailure, connectivity.Connecting:
-				break loop
+				return conn, nil
 			case connectivity.Shutdown:
+				_ = conn.Close()
 			}
-
-			_ = conn.Close()
-			conn = nil
 		default:
 			// Pool is empty, create a new connection
 			break loop
 		}
 	}
 
-	if conn == nil {
-		var err error
-
-		conn, err = grpc.NewClient(p.address, p.options...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create new client: %w", err)
-		}
+	conn, err := grpc.NewClient(p.address, p.options...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new client: %w", err)
 	}
 
 	return conn, nil
